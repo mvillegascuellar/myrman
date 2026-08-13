@@ -1,0 +1,4 @@
+backup_type = incremental
+from_lsn = 123456789
+to_lsn = 223456789
+last_lsn = 223456789

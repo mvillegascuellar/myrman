@@ -1,0 +1,48 @@
+# MyRMAN example configuration
+datadir_hint: /var/lib/mysql
+defaults_file: /etc/my.cnf
+backup_tool: auto # auto|xtrabackup|mariabackup
+
+local:
+  root: /var/lib/myrman
+  staging: /var/lib/myrman/staging
+  physical_dir: /var/lib/myrman/physical
+  binlog_dir: /var/lib/myrman/binlogs
+
+catalog: /var/lib/myrman/catalog.db
+
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: backup
+  # Prefer MYRMAN_MYSQL_PASSWORD env or defaults_extra_file
+  defaults_extra_file: ""
+
+compression: zstd # none|gzip|zstd
+
+encryption:
+  enabled: false
+  # Key via MYRMAN_BACKUP_KEY (raw or hex)
+
+cloud:
+  provider: none # none|s3|gcs|azure
+  prefix: myrman
+  server_name: mysql-primary
+  s3:
+    bucket: ""
+    region: us-east-1
+    endpoint: "" # optional custom endpoint
+  gcs:
+    bucket: ""
+  azure:
+    account: ""
+    container: ""
+    # AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_KEY or connection string via env
+
+retention:
+  offsite_daily: 30
+  offsite_monthly: 12
+  offsite_yearly: 10
+  offsite_binlog_days: 30
+  local_backup_sets: 2
+  local_binlog_days: 10

@@ -1,0 +1,19 @@
+uuid = 3e11fa47-71ca-11e1-9e33-c80aa9429562
+name = 
+tool_name = xtrabackup
+tool_command = --backup --stream=xbstream
+tool_version = 8.0.35-30
+ibbackup_version = 8.0.35-30
+server_version = 8.0.35
+start_time = 2024-01-15 10:00:00
+end_time = 2024-01-15 10:05:00
+lock_time = 0
+binlog_pos = mysql-bin.000042	98456321
+gtid_executed = 3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5000
+partial_lsn = 
+innodb_from_lsn = 0
+innodb_to_lsn = 123456789
+format = xb
+compact = N
+compressed = N
+encrypted = N
