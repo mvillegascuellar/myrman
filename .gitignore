@@ -1,7 +1,8 @@
 # Binaries
 /bin/
 /dist/
-myrman
+/myrman
+/myrman-linux-*
 *.exe
 
 # Test / coverage
