@@ -125,27 +125,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
-	if p := os.Getenv("MYRMAN_MYSQL_PASSWORD"); p != "" {
-		cfg.MySQL.Password = p
-	}
-
-	if cfg.Local.PhysicalDir == "" {
-		cfg.Local.PhysicalDir = cfg.Local.Root + "/physical"
-	}
-	if cfg.Local.BinlogDir == "" {
-		cfg.Local.BinlogDir = cfg.Local.Root + "/binlogs"
-	}
-	if cfg.Local.Staging == "" {
-		cfg.Local.Staging = cfg.Local.Root + "/staging"
-	}
-	if cfg.Catalog == "" {
-		cfg.Catalog = cfg.Local.Root + "/catalog.db"
-	}
-
-	cfg.BackupTool = strings.ToLower(strings.TrimSpace(cfg.BackupTool))
-	cfg.Compression = strings.ToLower(strings.TrimSpace(cfg.Compression))
-	cfg.Cloud.Provider = strings.ToLower(strings.TrimSpace(cfg.Cloud.Provider))
-
+	normalize(cfg)
 	return cfg, nil
 }
 

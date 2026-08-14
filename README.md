@@ -22,17 +22,34 @@ make build
 
 ## Configure
 
-Copy [`configs/myrman.example.yaml`](configs/myrman.example.yaml) and set paths, MySQL credentials, and optional cloud provider.
+Configuration is stored in the SQLite catalog (`settings` table). Import a YAML file once, then run commands without `--config`.
 
 ```bash
+# 1) Edit configs/myrman.example.yaml (or your own myrman.yaml)
+# 2) Import into the catalog (creates/updates settings rows)
+sudo ./myrman --catalog /var/lib/myrman/catalog.db config import --config myrman.yaml
+
+# 3) Inspect / tweak without re-importing
+./myrman config show
+./myrman config set mysql.host=127.0.0.1
+./myrman config set compression zstd
+./myrman config get defaults_file
+./myrman config keys
+
+# Optional: password via env (overrides stored mysql.password)
 export MYRMAN_MYSQL_PASSWORD='...'
-./myrman --config /path/to/myrman.yaml catalog list
+
+# Catalog path: --catalog, else MYRMAN_CATALOG, else /var/lib/myrman/catalog.db
+./myrman backup full
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `myrman config import --config FILE` | Load YAML into SQLite settings |
+| `myrman config show` | Print active config from catalog |
+| `myrman config get\|set\|keys` | Read/update individual settings |
 | `myrman backup full` | Full physical backup (xbstream pipe) |
 | `myrman backup incremental --parent latest` | Incremental with LSN continuity check |
 | `myrman binlog start\|stop\|status` | Continuous `mysqlbinlog --stop-never` |

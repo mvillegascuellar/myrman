@@ -85,14 +85,19 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*catalog.PhysicalBackup
 		return nil, err
 	}
 
-	args := []string{
-		"--backup",
-		"--stream=xbstream",
-		"--extra-lsndir=" + extraLSNDir,
-	}
+	// xtrabackup/mariabackup require --defaults-file as the first option.
+	var args []string
 	if r.Cfg.DefaultsFile != "" {
 		args = append(args, "--defaults-file="+r.Cfg.DefaultsFile)
 	}
+	if r.Cfg.MySQL.DefaultsExtraFile != "" {
+		args = append(args, "--defaults-extra-file="+r.Cfg.MySQL.DefaultsExtraFile)
+	}
+	args = append(args,
+		"--backup",
+		"--stream=xbstream",
+		"--extra-lsndir="+extraLSNDir,
+	)
 	if r.Cfg.MySQL.User != "" {
 		args = append(args, "--user="+r.Cfg.MySQL.User)
 	}

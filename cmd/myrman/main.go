@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/michaelvillegas/myrman/internal/backup"
@@ -19,43 +20,43 @@ import (
 )
 
 var (
-	cfgFile   string
+	cfgFile     string
 	catalogPath string
-	dryRun    bool
+	dryRun      bool
 )
 
 func main() {
 	root := &cobra.Command{
 		Use:   "myrman",
 		Short: "MySQL/Percona/MariaDB backup & recovery manager",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return nil
-		},
 	}
-	root.PersistentFlags().StringVar(&cfgFile, "config", "", "path to myrman YAML config")
-	root.PersistentFlags().StringVar(&catalogPath, "catalog", "", "override SQLite catalog path")
+	root.PersistentFlags().StringVar(&cfgFile, "config", "", "YAML config path (used by 'config import')")
+	root.PersistentFlags().StringVar(&catalogPath, "catalog", "", "SQLite catalog path (default: /var/lib/myrman/catalog.db or MYRMAN_CATALOG)")
 	root.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "do not delete/mutate (where supported)")
 
-	root.AddCommand(versionCmd(), backupCmd(), binlogCmd(), catalogCmd(), retainCmd(), recoverCmd())
+	root.AddCommand(
+		versionCmd(),
+		configCmd(),
+		backupCmd(),
+		binlogCmd(),
+		catalogCmd(),
+		retainCmd(),
+		recoverCmd(),
+	)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
+// loadRuntime loads configuration from the SQLite settings table.
 func loadRuntime() (*config.Config, *catalog.DB, *storage.Coordinator, error) {
-	cfg, err := config.Load(cfgFile)
+	cfg, db, err := loadConfigFromCatalog()
 	if err != nil {
 		return nil, nil, nil, err
-	}
-	if catalogPath != "" {
-		cfg.Catalog = catalogPath
 	}
 	if err := cfg.EnsureDirs(); err != nil {
-		return nil, nil, nil, err
-	}
-	db, err := catalog.Open(cfg.Catalog)
-	if err != nil {
+		_ = db.Close()
 		return nil, nil, nil, err
 	}
 	store, err := storage.NewCoordinator(cfg)
@@ -66,6 +67,53 @@ func loadRuntime() (*config.Config, *catalog.DB, *storage.Coordinator, error) {
 	return cfg, db, store, nil
 }
 
+// loadConfigFromCatalog opens the catalog and materializes Config from settings.
+// Does not create backup directories (safe for config show/get).
+func loadConfigFromCatalog() (*config.Config, *catalog.DB, error) {
+	path := config.ResolveCatalogPath(catalogPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, nil, fmt.Errorf("catalog dir: %w", err)
+	}
+	db, err := catalog.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	settings := catalog.NewSettingsRepo(db)
+	n, err := settings.Count(context.Background())
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	if n == 0 {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("no configuration in catalog %s; run: myrman --catalog %s config import --config myrman.yaml", path, path)
+	}
+	kv, err := settings.GetAll(context.Background())
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	cfg, err := config.FromSettings(kv)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	cfg.Catalog = path
+	return cfg, db, nil
+}
+
+func openCatalogOnly() (*catalog.DB, string, error) {
+	path := config.ResolveCatalogPath(catalogPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, "", fmt.Errorf("catalog dir: %w", err)
+	}
+	db, err := catalog.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	return db, path, nil
+}
+
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -74,6 +122,157 @@ func versionCmd() *cobra.Command {
 			fmt.Printf("myrman %s (commit %s, built %s)\n", version.Version, version.Commit, version.Date)
 		},
 	}
+}
+
+func configCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "config", Short: "Manage configuration stored in the SQLite catalog"}
+
+	importCmd := &cobra.Command{
+		Use:   "import",
+		Short: "Import a YAML config file into the catalog settings table",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cfgFile == "" {
+				return fmt.Errorf("--config is required for import")
+			}
+			fileCfg, err := config.Load(cfgFile)
+			if err != nil {
+				return err
+			}
+			// Catalog location: --catalog flag wins; else YAML catalog path.
+			path := catalogPath
+			if path == "" {
+				path = fileCfg.Catalog
+			}
+			if path == "" {
+				path = config.DefaultCatalogPath
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				return err
+			}
+			db, err := catalog.Open(path)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			fileCfg.Catalog = path
+			kv := config.ToSettings(fileCfg)
+			if err := catalog.NewSettingsRepo(db).SetMany(context.Background(), kv); err != nil {
+				return err
+			}
+			fmt.Printf("imported %d settings into %s\n", len(kv), path)
+			return nil
+		},
+	}
+
+	showCmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show the active configuration from the catalog",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reveal, _ := cmd.Flags().GetBool("reveal-secrets")
+			cfg, db, err := loadConfigFromCatalog()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			fmt.Print(config.FormatYAML(cfg, reveal))
+			return nil
+		},
+	}
+	showCmd.Flags().Bool("reveal-secrets", false, "show mysql.password in clear text")
+
+	getCmd := &cobra.Command{
+		Use:   "get <key>",
+		Short: "Get a single configuration value",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, _, err := openCatalogOnly()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			key := args[0]
+			if !config.IsKnownKey(key) {
+				return fmt.Errorf("unknown key %q", key)
+			}
+			v, ok, err := catalog.NewSettingsRepo(db).Get(context.Background(), key)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("key %q is not set (import config first)", key)
+			}
+			if key == "mysql.password" && v != "" {
+				reveal, _ := cmd.Flags().GetBool("reveal-secrets")
+				if !reveal {
+					v = "***"
+				}
+			}
+			fmt.Println(v)
+			return nil
+		},
+	}
+	getCmd.Flags().Bool("reveal-secrets", false, "show mysql.password in clear text")
+
+	setCmd := &cobra.Command{
+		Use:   "set <key> <value>| <key>=<value>",
+		Short: "Update a configuration value in the catalog",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key, value, err := config.ParseSetArg(args)
+			if err != nil {
+				return err
+			}
+			if !config.IsKnownKey(key) {
+				return fmt.Errorf("unknown key %q", key)
+			}
+			// Validate type by applying onto a temp config.
+			tmp := config.Defaults()
+			if err := config.SetField(tmp, key, value); err != nil {
+				return err
+			}
+			db, path, err := openCatalogOnly()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			repo := catalog.NewSettingsRepo(db)
+			n, err := repo.Count(context.Background())
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				// Seed defaults then apply the set so first-time CLI config works.
+				seed := config.Defaults()
+				seed.Catalog = path
+				if err := repo.SetMany(context.Background(), config.ToSettings(seed)); err != nil {
+					return err
+				}
+			}
+			if err := repo.Set(context.Background(), key, value); err != nil {
+				return err
+			}
+			display := value
+			if key == "mysql.password" && value != "" {
+				display = "***"
+			}
+			fmt.Printf("set %s=%s (catalog %s)\n", key, display, path)
+			return nil
+		},
+	}
+
+	keysCmd := &cobra.Command{
+		Use:   "keys",
+		Short: "List supported configuration keys",
+		Run: func(cmd *cobra.Command, args []string) {
+			for _, k := range config.KnownKeys() {
+				fmt.Println(k)
+			}
+		},
+	}
+
+	cmd.AddCommand(importCmd, showCmd, getCmd, setCmd, keysCmd)
+	return cmd
 }
 
 func backupCmd() *cobra.Command {
@@ -182,12 +381,11 @@ func catalogCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List physical backups or binlogs",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, db, _, err := loadRuntime()
+			_, db, _, err := loadRuntime()
 			if err != nil {
 				return err
 			}
 			defer db.Close()
-			_ = cfg
 			ctx := context.Background()
 			if kind == "binlog" {
 				rows, err := catalog.NewBinlogRepo(db).List(ctx, limit)
