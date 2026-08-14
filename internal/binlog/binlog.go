@@ -48,7 +48,17 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("binlog streamer already running (pid %d)", pid)
 	}
 
+	if err := config.RequireMySQLPassword(s.Cfg); err != nil {
+		return err
+	}
+	clientCnf, cleanupCnf, err := config.WriteClientDefaultsFile(s.Cfg)
+	if err != nil {
+		return fmt.Errorf("write client defaults: %w", err)
+	}
+	defer cleanupCnf()
+
 	args := []string{
+		"--defaults-extra-file=" + clientCnf,
 		"--read-from-remote-server",
 		"--raw",
 		"--stop-never",
@@ -57,11 +67,8 @@ func (s *Service) Start(ctx context.Context) error {
 		"--user=" + s.Cfg.MySQL.User,
 		"--result-file=" + ensureTrailingSlash(s.Cfg.Local.BinlogDir),
 	}
-	if s.Cfg.MySQL.Password != "" {
-		args = append(args, "--password="+s.Cfg.MySQL.Password)
-	}
-	// Start from first binlog if none specified — mysqlbinlog requires a log name; use empty to let server decide via --to-last-log alternatives.
-	// Require MYRMAN_BINLOG_START or default mysql-bin.000001 style via env.
+	// Start from first binlog if none specified — mysqlbinlog requires a log name.
+	// Override via MYRMAN_BINLOG_START.
 	startLog := os.Getenv("MYRMAN_BINLOG_START")
 	if startLog == "" {
 		startLog = "mysql-bin.000001"
@@ -98,7 +105,7 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}()
 
-	err := cmd.Wait()
+	err = cmd.Wait()
 	_ = os.Remove(s.pidPath())
 	return err
 }

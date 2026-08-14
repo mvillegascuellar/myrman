@@ -36,7 +36,11 @@ sudo ./myrman --catalog /var/lib/myrman/catalog.db config import --config myrman
 ./myrman config get defaults_file
 ./myrman config keys
 
-# Optional: password via env (overrides stored mysql.password)
+# Optional: password via env (overrides stored mysql.password).
+# Important: plain `sudo` strips your environment. Prefer one of:
+#   sudo MYRMAN_MYSQL_PASSWORD='...' ./myrman backup full
+#   sudo -E ./myrman backup full
+#   sudo ./myrman config set mysql.password='...'   # stored in catalog
 export MYRMAN_MYSQL_PASSWORD='...'
 
 # Catalog path: --catalog, else MYRMAN_CATALOG, else /var/lib/myrman/catalog.db

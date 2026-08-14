@@ -65,6 +65,15 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*catalog.PhysicalBackup
 	}
 	defer os.RemoveAll(extraLSNDir)
 
+	if err := config.RequireMySQLPassword(r.Cfg); err != nil {
+		return nil, err
+	}
+	clientCnf, cleanupCnf, err := config.WriteClientDefaultsFile(r.Cfg)
+	if err != nil {
+		return nil, fmt.Errorf("write client defaults: %w", err)
+	}
+	defer cleanupCnf()
+
 	rec := &catalog.PhysicalBackup{
 		ID:              id,
 		BackupType:      catalog.BackupFull,
@@ -90,19 +99,19 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*catalog.PhysicalBackup
 	if r.Cfg.DefaultsFile != "" {
 		args = append(args, "--defaults-file="+r.Cfg.DefaultsFile)
 	}
-	if r.Cfg.MySQL.DefaultsExtraFile != "" {
-		args = append(args, "--defaults-extra-file="+r.Cfg.MySQL.DefaultsExtraFile)
-	}
+	// Password (and user/host/port) via defaults-extra-file so version_check sees them
+	// and so the secret is not logged on the process command line.
+	args = append(args, "--defaults-extra-file="+clientCnf)
 	args = append(args,
 		"--backup",
 		"--stream=xbstream",
 		"--extra-lsndir="+extraLSNDir,
 	)
+	if tool == "xtrabackup" {
+		args = append(args, "--no-server-version-check")
+	}
 	if r.Cfg.MySQL.User != "" {
 		args = append(args, "--user="+r.Cfg.MySQL.User)
-	}
-	if r.Cfg.MySQL.Password != "" {
-		args = append(args, "--password="+r.Cfg.MySQL.Password)
 	}
 	if r.Cfg.MySQL.Host != "" {
 		args = append(args, "--host="+r.Cfg.MySQL.Host)
