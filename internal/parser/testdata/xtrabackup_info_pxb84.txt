@@ -1,0 +1,17 @@
+uuid = dbda53bc-9c24-11f1-89f4-5254005f988f
+name = 
+tool_name = xtrabackup
+tool_command = --backup --stream=xbstream
+tool_version = 8.4.0-2
+ibbackup_version = 8.4.0-2
+server_version = 8.4.0
+start_time = 2026-08-19 22:02:32
+end_time = 2026-08-19 22:02:35
+lock_time = 0
+binlog_pos = filename 'mysql-bin.000003', position '157', GTID of the last change '1a34264e-9ac0-11f1-9e76-5254005f988f:1-61'
+innodb_from_lsn = 0
+innodb_to_lsn = 46013836
+format = xb
+compact = N
+compressed = N
+encrypted = N

@@ -104,6 +104,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*catalog.PhysicalBackup
 		"--backup",
 		"--stream=xbstream",
 		"--extra-lsndir="+extraLSNDir,
+		"--binlog-info=ON",
 	)
 	if tool == "xtrabackup" {
 		args = append(args, "--no-server-version-check")
@@ -149,6 +150,12 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*catalog.PhysicalBackup
 	}
 	if info == nil {
 		info = &parser.Info{}
+	}
+	if bf, err := os.Open(filepath.Join(extraLSNDir, "xtrabackup_binlog_info")); err == nil {
+		if bi, err := parser.ParseBinlogInfo(bf); err == nil {
+			parser.MergeInfo(info, bi)
+		}
+		_ = bf.Close()
 	}
 
 	rec.LSNFrom = cp.FromLSN

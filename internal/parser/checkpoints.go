@@ -28,7 +28,10 @@ type Info struct {
 	EndTime      string
 }
 
-var kvLine = regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$`)
+var (
+	kvLine          = regexp.MustCompile(`^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$`)
+	verboseBinlogRe = regexp.MustCompile(`(?i)filename\s+'([^']+)'\s*,\s*position\s+'?(\d+)'?(?:\s*,\s*GTID of the last change\s+'([^']*)')?`)
+)
 
 func ParseCheckpoints(r io.Reader) (*Checkpoints, error) {
 	vals := map[string]string{}
@@ -107,15 +110,21 @@ func ParseInfo(r io.Reader) (*Info, error) {
 	}
 
 	info.GTIDExecuted = firstNonEmpty(vals["gtid_executed"], vals["gtid_purged"])
-	info.ServerUUID = firstNonEmpty(vals["uuid"], vals["server_uuid"], vals["serverid"])
+	info.ServerUUID = firstNonEmpty(vals["server_uuid"], vals["uuid"], vals["serverid"])
 	info.ToolVersion = firstNonEmpty(vals["tool_version"], vals["xtrabackup_version"])
 	info.StartTime = vals["start_time"]
 	info.EndTime = vals["end_time"]
 
-	// binlog_pos may be "filename\tposition" or separate keys
+	// PXB 8.x: binlog_pos = filename 'mysql-bin.000003', position '157', GTID of the last change 'uuid:1-61'
 	if bp := vals["binlog_pos"]; bp != "" {
-		file, pos, ok := splitBinlogPos(bp)
+		file, pos, gtid, ok := parseVerboseBinlogPos(bp)
 		if ok {
+			info.BinlogFile = file
+			info.BinlogPos = pos
+			if info.GTIDExecuted == "" {
+				info.GTIDExecuted = gtid
+			}
+		} else if file, pos, ok := splitBinlogPos(bp); ok {
 			info.BinlogFile = file
 			info.BinlogPos = pos
 		}
@@ -133,6 +142,17 @@ func ParseInfo(r io.Reader) (*Info, error) {
 	if info.GTIDExecuted == "" {
 		info.GTIDExecuted = extractMultilineGTID(text)
 	}
+	if info.GTIDExecuted == "" {
+		if m := verboseBinlogRe.FindStringSubmatch(text); len(m) == 4 {
+			info.GTIDExecuted = strings.TrimSpace(m[3])
+			if info.BinlogFile == "" {
+				info.BinlogFile = m[1]
+			}
+			if info.BinlogPos == 0 {
+				info.BinlogPos, _ = strconv.ParseInt(m[2], 10, 64)
+			}
+		}
+	}
 	if info.ServerUUID == "" {
 		re := regexp.MustCompile(`(?i)server[_ ]?uuid\s*[=:]\s*([0-9a-f-]{36})`)
 		if m := re.FindStringSubmatch(text); len(m) == 2 {
@@ -141,6 +161,64 @@ func ParseInfo(r io.Reader) (*Info, error) {
 	}
 
 	return info, nil
+}
+
+func parseVerboseBinlogPos(s string) (file string, pos int64, gtid string, ok bool) {
+	m := verboseBinlogRe.FindStringSubmatch(s)
+	if len(m) < 3 {
+		return "", 0, "", false
+	}
+	pos, err := strconv.ParseInt(m[2], 10, 64)
+	if err != nil {
+		return "", 0, "", false
+	}
+	gtid = ""
+	if len(m) >= 4 {
+		gtid = strings.TrimSpace(m[3])
+	}
+	return m[1], pos, gtid, true
+}
+
+// ParseBinlogInfo parses xtrabackup_binlog_info: "file\tpos[\tgtid]".
+func ParseBinlogInfo(r io.Reader) (*Info, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	line := strings.TrimSpace(string(raw))
+	if line == "" {
+		return &Info{}, nil
+	}
+	if file, pos, gtid, ok := parseVerboseBinlogPos(line); ok {
+		return &Info{BinlogFile: file, BinlogPos: pos, GTIDExecuted: gtid}, nil
+	}
+	fields := strings.Fields(line)
+	info := &Info{}
+	if len(fields) >= 1 {
+		info.BinlogFile = fields[0]
+	}
+	if len(fields) >= 2 {
+		info.BinlogPos, _ = strconv.ParseInt(fields[1], 10, 64)
+	}
+	if len(fields) >= 3 {
+		info.GTIDExecuted = strings.Join(fields[2:], " ")
+	}
+	return info, nil
+}
+
+func MergeInfo(dst *Info, src *Info) {
+	if src == nil {
+		return
+	}
+	if dst.BinlogFile == "" {
+		dst.BinlogFile = src.BinlogFile
+	}
+	if dst.BinlogPos == 0 {
+		dst.BinlogPos = src.BinlogPos
+	}
+	if dst.GTIDExecuted == "" {
+		dst.GTIDExecuted = src.GTIDExecuted
+	}
 }
 
 func splitBinlogPos(s string) (string, int64, bool) {

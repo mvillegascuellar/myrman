@@ -80,6 +80,38 @@ func TestParseInfo(t *testing.T) {
 	}
 }
 
+func TestParseInfoPXB84GTID(t *testing.T) {
+	f, err := os.Open(filepath.Join("testdata", "xtrabackup_info_pxb84.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	info, err := parser.ParseInfo(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.BinlogFile != "mysql-bin.000003" || info.BinlogPos != 157 {
+		t.Fatalf("binlog %s:%d", info.BinlogFile, info.BinlogPos)
+	}
+	if info.GTIDExecuted != "1a34264e-9ac0-11f1-9e76-5254005f988f:1-61" {
+		t.Fatalf("gtid=%s", info.GTIDExecuted)
+	}
+}
+
+func TestParseBinlogInfo(t *testing.T) {
+	r := strings.NewReader("mysql-bin.000002\t1232\tc777888a-b6df-11e2-a604-080027635ef5:1-4\n")
+	info, err := parser.ParseBinlogInfo(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.BinlogFile != "mysql-bin.000002" || info.BinlogPos != 1232 {
+		t.Fatalf("%s:%d", info.BinlogFile, info.BinlogPos)
+	}
+	if info.GTIDExecuted != "c777888a-b6df-11e2-a604-080027635ef5:1-4" {
+		t.Fatalf("gtid=%s", info.GTIDExecuted)
+	}
+}
+
 func TestSequenceFromFilename(t *testing.T) {
 	n, err := parser.SequenceFromFilename("mysql-bin.000123")
 	if err != nil || n != 123 {
