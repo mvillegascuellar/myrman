@@ -28,8 +28,9 @@ func RequireMySQLPassword(cfg *Config) error {
 	return nil
 }
 
-// WriteClientDefaultsFile writes a 0600 defaults file with client credentials for
-// xtrabackup/mysqlbinlog (covers [client] and [xtrabackup] for version_check).
+// WriteClientDefaultsFile writes a 0600 defaults file that xtrabackup/mysqlbinlog
+// can take as the sole --defaults-file (first argv). It !include's the server
+// defaults_file, optional extra file, then [client]/[xtrabackup] credentials.
 // Caller must remove the file when done (cleanup).
 func WriteClientDefaultsFile(cfg *Config) (path string, cleanup func(), err error) {
 	pw := ResolveMySQLPassword(cfg)
@@ -57,6 +58,12 @@ func WriteClientDefaultsFile(cfg *Config) (path string, cleanup func(), err erro
 	}
 
 	var b strings.Builder
+	// xtrabackup requires --defaults-file OR --defaults-extra-file as argv[1],
+	// never both. Fold the server cnf in via !include so we pass a single
+	// --defaults-file that still carries datadir/innodb settings.
+	if cfg.DefaultsFile != "" {
+		fmt.Fprintf(&b, "!include %s\n\n", cfg.DefaultsFile)
+	}
 	// Include any user-provided extra defaults first so our credentials still win
 	// when sections are re-declared below (later keys override in MySQL option files
 	// within the same group only for last occurrence — we put ours last).

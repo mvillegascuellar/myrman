@@ -94,14 +94,12 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*catalog.PhysicalBackup
 		return nil, err
 	}
 
-	// xtrabackup/mariabackup require --defaults-file as the first option.
-	var args []string
-	if r.Cfg.DefaultsFile != "" {
-		args = append(args, "--defaults-file="+r.Cfg.DefaultsFile)
+	// Combined cnf (server !include + credentials) must be the first argument.
+	// xtrabackup rejects --defaults-file and --defaults-extra-file together
+	// because each claims it must be specified first.
+	args := []string{
+		"--defaults-file=" + clientCnf,
 	}
-	// Password (and user/host/port) via defaults-extra-file so version_check sees them
-	// and so the secret is not logged on the process command line.
-	args = append(args, "--defaults-extra-file="+clientCnf)
 	args = append(args,
 		"--backup",
 		"--stream=xbstream",

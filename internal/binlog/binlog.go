@@ -58,7 +58,7 @@ func (s *Service) Start(ctx context.Context) error {
 	defer cleanupCnf()
 
 	args := []string{
-		"--defaults-extra-file=" + clientCnf,
+		"--defaults-file=" + clientCnf,
 		"--read-from-remote-server",
 		"--raw",
 		"--stop-never",

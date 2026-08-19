@@ -35,6 +35,7 @@ func TestRequireMySQLPasswordFromConfig(t *testing.T) {
 func TestWriteClientDefaultsFile(t *testing.T) {
 	t.Setenv("MYRMAN_MYSQL_PASSWORD", "p#ass\"word")
 	cfg := config.Defaults()
+	cfg.DefaultsFile = "/etc/mysql/mysql.conf.d/mysqld.cnf"
 	cfg.MySQL.User = "backup"
 	cfg.MySQL.Host = "127.0.0.1"
 	cfg.MySQL.Port = 3306
@@ -48,6 +49,9 @@ func TestWriteClientDefaultsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
+	if !strings.Contains(text, "!include /etc/mysql/mysql.conf.d/mysqld.cnf") {
+		t.Fatalf("missing server !include: %s", text)
+	}
 	if !strings.Contains(text, "[xtrabackup]") || !strings.Contains(text, "[client]") {
 		t.Fatalf("missing sections: %s", text)
 	}
