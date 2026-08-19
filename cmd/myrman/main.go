@@ -375,11 +375,11 @@ func binlogCmd() *cobra.Command {
 
 func catalogCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "catalog", Short: "Inspect backup catalog"}
-	var kind string
+	var kind, status string
 	var limit int
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "List physical backups or binlogs",
+		Short: "List backups as a table (ID, type, start time, duration, status)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, db, _, err := loadRuntime()
 			if err != nil {
@@ -392,25 +392,22 @@ func catalogCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				enc := json.NewEncoder(os.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(rows)
+				return printBinlogTable(cmd.OutOrStdout(), rows)
 			}
-			rows, err := catalog.NewPhysicalRepo(db).List(ctx, "", limit)
+			rows, err := catalog.NewPhysicalRepo(db).List(ctx, status, limit)
 			if err != nil {
 				return err
 			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(rows)
+			return printPhysicalTable(cmd.OutOrStdout(), rows)
 		},
 	}
 	list.Flags().StringVar(&kind, "type", "physical", "physical|binlog")
+	list.Flags().StringVar(&status, "status", "", "filter physical backups: COMPLETED|FAILED|RUNNING|DELETED (empty = all)")
 	list.Flags().IntVar(&limit, "limit", 50, "max rows")
 
 	show := &cobra.Command{
 		Use:   "show [id]",
-		Short: "Show a physical backup by id",
+		Short: "Show a physical backup by id (JSON)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, db, _, err := loadRuntime()

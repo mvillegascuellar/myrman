@@ -92,8 +92,8 @@ Catalog path resolution: `--catalog`, else `MYRMAN_CATALOG`, else `/var/lib/myrm
 | `myrman backup full` | Full physical backup (xbstream pipe) |
 | `myrman backup incremental --parent latest` | Incremental with LSN continuity check |
 | `myrman binlog start\|stop\|status` | Continuous `mysqlbinlog --stop-never` |
-| `myrman catalog list [--type physical\|binlog]` | Inventory |
-| `myrman catalog show <uuid>` | Backup detail |
+| `myrman catalog list [--type physical\|binlog] [--status COMPLETED]` | Table: ID, type, start time (UTC), duration, status |
+| `myrman catalog show <uuid>` | Backup detail (JSON) |
 | `myrman retain tag` | Assign DAILY/MONTHLY/YEARLY |
 | `myrman retain run [--dry-run]` | Tag + LSN-safe prune |
 | `myrman recover --target-time="YYYY-MM-DD HH:MM:SS"` | PITR plan (add `--apply` to execute) |
