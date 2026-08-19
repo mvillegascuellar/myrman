@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // Resolve returns the backup binary name: xtrabackup or mariabackup.
@@ -30,3 +31,42 @@ func Resolve(preference string) (string, error) {
 
 // PrepareBinary is the same tool used for --prepare.
 func PrepareBinary(tool string) string { return tool }
+
+var helpCache sync.Map // tool -> help text
+
+func toolHelp(tool string) string {
+	if v, ok := helpCache.Load(tool); ok {
+		return v.(string)
+	}
+	out, err := exec.Command(tool, "--help").CombinedOutput()
+	text := string(out)
+	if err != nil && text == "" {
+		return ""
+	}
+	helpCache.Store(tool, text)
+	return text
+}
+
+// SupportsFlag reports whether `tool --help` mentions the given flag name
+// (with or without leading dashes), e.g. "binlog-info".
+func SupportsFlag(tool, flag string) bool {
+	flag = strings.TrimLeft(flag, "-")
+	help := toolHelp(tool)
+	if help == "" {
+		return false
+	}
+	return strings.Contains(help, "--"+flag)
+}
+
+// BackupFlags returns tool-specific extra backup arguments that are safe
+// for this binary version (PXB 8.0 dropped --binlog-info; 8.4 still has it).
+func BackupFlags(tool string) []string {
+	var args []string
+	if SupportsFlag(tool, "binlog-info") {
+		args = append(args, "--binlog-info=ON")
+	}
+	if tool == "xtrabackup" && SupportsFlag(tool, "no-server-version-check") {
+		args = append(args, "--no-server-version-check")
+	}
+	return args
+}

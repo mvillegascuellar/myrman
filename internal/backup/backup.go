@@ -104,11 +104,8 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*catalog.PhysicalBackup
 		"--backup",
 		"--stream=xbstream",
 		"--extra-lsndir="+extraLSNDir,
-		"--binlog-info=ON",
 	)
-	if tool == "xtrabackup" {
-		args = append(args, "--no-server-version-check")
-	}
+	args = append(args, engine.BackupFlags(tool)...)
 	if r.Cfg.MySQL.User != "" {
 		args = append(args, "--user="+r.Cfg.MySQL.User)
 	}
