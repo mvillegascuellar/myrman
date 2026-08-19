@@ -22,30 +22,65 @@ make build
 
 ## Configure
 
-Configuration is stored in the SQLite catalog (`settings` table). Import a YAML file once, then run commands without `--config`.
+Runtime configuration lives in the SQLite catalog (`settings` table), not in the YAML file after first setup. Import `myrman.yaml` once, then use `config show` / `config set` for later changes.
+
+### Initial import from `myrman.yaml`
+
+1. Copy the example and edit paths, MySQL user, defaults file, and optional cloud settings:
 
 ```bash
-# 1) Edit configs/myrman.example.yaml (or your own myrman.yaml)
-# 2) Import into the catalog (creates/updates settings rows)
-sudo ./myrman --catalog /var/lib/myrman/catalog.db config import --config myrman.yaml
+cp configs/myrman.example.yaml myrman.yaml
+# edit myrman.yaml
+```
 
-# 3) Inspect / tweak without re-importing
+2. Import it into the catalog. `--config` is **required** for import; `--catalog` is optional if `catalog:` is already set in the YAML (default `/var/lib/myrman/catalog.db`):
+
+```bash
+sudo ./myrman --catalog /var/lib/myrman/catalog.db config import --config myrman.yaml
+```
+
+You should see something like `imported 29 settings into /var/lib/myrman/catalog.db`.
+
+3. Confirm and set the MySQL password (YAML does not store a password by default):
+
+```bash
+sudo ./myrman config show
+sudo ./myrman config set mysql.password='...'
+```
+
+After that, run commands **without** `--config`:
+
+```bash
+sudo ./myrman backup full
+```
+
+If you skip import, backup/catalog commands fail with:
+
+`no configuration in catalog ...; run: myrman --catalog ... config import --config myrman.yaml`
+
+Re-running `config import` overwrites matching keys in SQLite from the YAML file.
+
+### Later changes (no re-import)
+
+```bash
 ./myrman config show
 ./myrman config set mysql.host=127.0.0.1
 ./myrman config set compression zstd
 ./myrman config get defaults_file
 ./myrman config keys
-
-# Optional: password via env (overrides stored mysql.password).
-# Important: plain `sudo` strips your environment. Prefer one of:
-#   sudo MYRMAN_MYSQL_PASSWORD='...' ./myrman backup full
-#   sudo -E ./myrman backup full
-#   sudo ./myrman config set mysql.password='...'   # stored in catalog
-export MYRMAN_MYSQL_PASSWORD='...'
-
-# Catalog path: --catalog, else MYRMAN_CATALOG, else /var/lib/myrman/catalog.db
-./myrman backup full
 ```
+
+### Password and `sudo`
+
+Plain `sudo` strips your environment, so `MYRMAN_MYSQL_PASSWORD` from your shell is not visible. Prefer one of:
+
+```bash
+sudo MYRMAN_MYSQL_PASSWORD='...' ./myrman backup full
+sudo -E ./myrman backup full
+sudo ./myrman config set mysql.password='...'   # stored in catalog
+```
+
+Catalog path resolution: `--catalog`, else `MYRMAN_CATALOG`, else `/var/lib/myrman/catalog.db`.
 
 ## Commands
 
