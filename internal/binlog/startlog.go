@@ -8,10 +8,16 @@ import (
 	"github.com/michaelvillegas/myrman/internal/parser"
 )
 
+// StartHint is used to pick the first remote dump file.
+type StartHint struct {
+	Requested     string
+	LastCataloged string
+	BackupBinlog  string // latest completed physical backup's binlog_file
+}
+
 // ChooseStartLog picks the first mysqlbinlog remote file that exists on the server.
-// requested: env/config override. lastCataloged: last COMPLETED archive filename.
 // serverLogs: names from SHOW BINARY LOGS, oldest first.
-func ChooseStartLog(requested, lastCataloged string, serverLogs []string) (string, error) {
+func ChooseStartLog(h StartHint, serverLogs []string) (string, error) {
 	if len(serverLogs) == 0 {
 		return "", fmt.Errorf("SHOW BINARY LOGS returned no files; check log_bin and privileges (REPLICATION CLIENT)")
 	}
@@ -20,23 +26,21 @@ func ChooseStartLog(requested, lastCataloged string, serverLogs []string) (strin
 		index[n] = i
 	}
 
-	if requested != "" {
-		if _, ok := index[requested]; !ok {
-			return "", fmt.Errorf("binlog %q is not in the server index (available: %s)", requested, strings.Join(serverLogs, ", "))
+	if h.Requested != "" {
+		if _, ok := index[h.Requested]; !ok {
+			return "", fmt.Errorf("binlog %q is not in the server index (available: %s)", h.Requested, strings.Join(serverLogs, ", "))
 		}
-		return requested, nil
+		return h.Requested, nil
 	}
 
-	if lastCataloged != "" {
-		if i, ok := index[lastCataloged]; ok {
-			// Resume from the same file if it is the current last (still growing),
-			// otherwise start at the next file after the one we already archived.
+	if h.LastCataloged != "" {
+		if i, ok := index[h.LastCataloged]; ok {
 			if i+1 < len(serverLogs) {
 				return serverLogs[i+1], nil
 			}
 			return serverLogs[i], nil
 		}
-		lastSeq, err := parser.SequenceFromFilename(lastCataloged)
+		lastSeq, err := parser.SequenceFromFilename(h.LastCataloged)
 		if err == nil {
 			for _, n := range serverLogs {
 				seq, e := parser.SequenceFromFilename(n)
@@ -45,10 +49,38 @@ func ChooseStartLog(requested, lastCataloged string, serverLogs []string) (strin
 				}
 			}
 		}
-		// Cataloged file was purged and nothing newer remains — start at oldest available.
+	}
+
+	if h.BackupBinlog != "" {
+		if _, ok := index[h.BackupBinlog]; ok {
+			return h.BackupBinlog, nil
+		}
+		bseq, err := parser.SequenceFromFilename(h.BackupBinlog)
+		if err == nil {
+			for _, n := range serverLogs {
+				seq, e := parser.SequenceFromFilename(n)
+				if e == nil && seq >= bseq {
+					return n, nil
+				}
+			}
+		}
 	}
 
 	return serverLogs[0], nil
+}
+
+func logsFrom(serverLogs []string, start string) []string {
+	for i, n := range serverLogs {
+		if n == start {
+			return serverLogs[i:]
+		}
+	}
+	return serverLogs
+}
+
+func isAnonymousGTIDDumpError(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "anonymous transaction") && strings.Contains(s, "gtid_mode")
 }
 
 func parseShowBinaryLogs(out string) []string {

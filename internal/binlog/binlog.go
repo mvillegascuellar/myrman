@@ -1,8 +1,10 @@
 package binlog
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -75,12 +77,61 @@ func (s *Service) Start(ctx context.Context) error {
 	} else if latest != nil {
 		lastCataloged = latest.Filename
 	}
-	startLog, err := ChooseStartLog(requested, lastCataloged, serverLogs)
+	backupBinlog := latestPhysicalBinlog(ctx, s.DB)
+	startLog, err := ChooseStartLog(StartHint{
+		Requested:     requested,
+		LastCataloged: lastCataloged,
+		BackupBinlog:  backupBinlog,
+	}, serverLogs)
 	if err != nil {
 		return err
 	}
-	log.Printf("binlog stream start file=%s (server has %d files, last cataloged=%q)", startLog, len(serverLogs), lastCataloged)
+	candidates := logsFrom(serverLogs, startLog)
+	log.Printf("binlog stream start file=%s candidates=%d (last cataloged=%q backup binlog=%q)", startLog, len(candidates), lastCataloged, backupBinlog)
 
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go s.watchAndCatalog(watchCtx)
+
+	var lastErr error
+	for i, file := range candidates {
+		lastErr = s.runDump(ctx, cancel, clientCnf, file)
+		if lastErr == nil {
+			return nil
+		}
+		if isAnonymousGTIDDumpError(lastErr.Error()) && i+1 < len(candidates) {
+			log.Printf("skipping %s (%v); retrying from next binary log (likely pre-GTID anonymous events)", file, lastErr)
+			continue
+		}
+		return lastErr
+	}
+	return lastErr
+}
+
+func latestPhysicalBinlog(ctx context.Context, db *catalog.DB) string {
+	backs, err := catalog.NewPhysicalRepo(db).ListCompleted(ctx)
+	if err != nil {
+		return ""
+	}
+	var best string
+	var bestTime int64
+	for _, b := range backs {
+		if !b.BinlogFile.Valid || b.BinlogFile.String == "" {
+			continue
+		}
+		t := b.StartTime
+		if b.EndTime.Valid {
+			t = b.EndTime.Int64
+		}
+		if t >= bestTime {
+			bestTime = t
+			best = b.BinlogFile.String
+		}
+	}
+	return best
+}
+
+func (s *Service) runDump(ctx context.Context, cancel context.CancelFunc, clientCnf, startLog string) error {
 	args := []string{
 		"--defaults-file=" + clientCnf,
 		"--read-from-remote-server",
@@ -91,12 +142,16 @@ func (s *Service) Start(ctx context.Context) error {
 		fmt.Sprintf("--port=%d", s.Cfg.MySQL.Port),
 		"--user=" + s.Cfg.MySQL.User,
 		"--result-file=" + ensureTrailingSlash(s.Cfg.Local.BinlogDir),
-		startLog,
 	}
+	if s.Cfg.MySQL.BinlogServerID > 0 && mysqlbinlogSupports("connection-server-id") {
+		args = append(args, fmt.Sprintf("--connection-server-id=%d", s.Cfg.MySQL.BinlogServerID))
+	}
+	args = append(args, startLog)
 
 	cmd := exec.Command("mysqlbinlog", args...)
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var errBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return err
@@ -105,27 +160,33 @@ func (s *Service) Start(ctx context.Context) error {
 		_ = cmd.Process.Kill()
 		return err
 	}
-	log.Printf("binlog streamer started pid=%d dir=%s", cmd.Process.Pid, s.Cfg.Local.BinlogDir)
+	log.Printf("binlog streamer started pid=%d file=%s dir=%s", cmd.Process.Pid, startLog, s.Cfg.Local.BinlogDir)
 
-	watchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go s.watchAndCatalog(watchCtx)
+	dumpCtx, dumpCancel := context.WithCancel(ctx)
+	defer dumpCancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
 		select {
 		case <-sigCh:
 			cancel()
+			dumpCancel()
 			_ = cmd.Process.Signal(syscall.SIGTERM)
-		case <-ctx.Done():
-			cancel()
-			_ = cmd.Process.Signal(syscall.SIGTERM)
+		case <-dumpCtx.Done():
 		}
 	}()
 
-	err = cmd.Wait()
+	err := cmd.Wait()
+	dumpCancel()
 	_ = os.Remove(s.pidPath())
+	if err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+	}
 	return err
 }
 
@@ -270,4 +331,9 @@ func executilLook(name string) error {
 		return fmt.Errorf("%s not found on PATH", name)
 	}
 	return nil
+}
+
+func mysqlbinlogSupports(flag string) bool {
+	out, _ := exec.Command("mysqlbinlog", "--help").CombinedOutput()
+	return strings.Contains(string(out), "--"+strings.TrimLeft(flag, "-"))
 }

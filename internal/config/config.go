@@ -34,7 +34,8 @@ type MySQLConfig struct {
 	User               string `mapstructure:"user"`
 	DefaultsExtraFile  string `mapstructure:"defaults_extra_file"`
 	Password           string `mapstructure:"-"` // from MYRMAN_MYSQL_PASSWORD
-	BinlogStart        string `mapstructure:"binlog_start"` // empty = auto from SHOW BINARY LOGS
+	BinlogStart        string `mapstructure:"binlog_start"`     // empty = auto from SHOW BINARY LOGS
+	BinlogServerID     int    `mapstructure:"binlog_server_id"` // mysqlbinlog dump connection server_id; 0 = omit
 }
 
 type EncryptionConfig struct {
@@ -86,7 +87,7 @@ func Defaults() *Config {
 			BinlogDir:   "/var/lib/myrman/binlogs",
 		},
 		Catalog:     "/var/lib/myrman/catalog.db",
-		MySQL:       MySQLConfig{Host: "127.0.0.1", Port: 3306, User: "backup"},
+		MySQL:       MySQLConfig{Host: "127.0.0.1", Port: 3306, User: "backup", BinlogServerID: 65534},
 		Compression: "zstd",
 		Encryption:  EncryptionConfig{Enabled: false},
 		Cloud: CloudConfig{

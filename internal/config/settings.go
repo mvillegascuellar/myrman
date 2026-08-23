@@ -49,6 +49,7 @@ var knownKeySet = map[string]struct{}{
 	"mysql.defaults_extra_file": {},
 	"mysql.password":            {},
 	"mysql.binlog_start":        {},
+	"mysql.binlog_server_id":    {},
 	"encryption.enabled":        {},
 	"cloud.provider":            {},
 	"cloud.prefix":              {},
@@ -89,6 +90,7 @@ func ToSettings(c *Config) map[string]string {
 		"mysql.user":                c.MySQL.User,
 		"mysql.defaults_extra_file": c.MySQL.DefaultsExtraFile,
 		"mysql.binlog_start":        c.MySQL.BinlogStart,
+		"mysql.binlog_server_id":    strconv.Itoa(c.MySQL.BinlogServerID),
 		"encryption.enabled":        strconv.FormatBool(c.Encryption.Enabled),
 		"cloud.provider":            c.Cloud.Provider,
 		"cloud.prefix":              c.Cloud.Prefix,
@@ -172,6 +174,12 @@ func SetField(cfg *Config, key, value string) error {
 		cfg.MySQL.Password = value
 	case "mysql.binlog_start":
 		cfg.MySQL.BinlogStart = value
+	case "mysql.binlog_server_id":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("mysql.binlog_server_id: %w", err)
+		}
+		cfg.MySQL.BinlogServerID = n
 	case "encryption.enabled":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
@@ -261,6 +269,7 @@ func FormatYAML(c *Config, revealSecrets bool) string {
 	fmt.Fprintf(&b, "  user: %s\n", c.MySQL.User)
 	fmt.Fprintf(&b, "  defaults_extra_file: %q\n", c.MySQL.DefaultsExtraFile)
 	fmt.Fprintf(&b, "  binlog_start: %q\n", c.MySQL.BinlogStart)
+	fmt.Fprintf(&b, "  binlog_server_id: %d\n", c.MySQL.BinlogServerID)
 	fmt.Fprintf(&b, "  password: %s\n", pw)
 	fmt.Fprintf(&b, "encryption:\n")
 	fmt.Fprintf(&b, "  enabled: %t\n", c.Encryption.Enabled)
