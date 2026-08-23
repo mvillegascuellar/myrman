@@ -57,23 +57,42 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	defer cleanupCnf()
 
+	if err := executilLook("mysql"); err != nil {
+		return err
+	}
+	serverLogs, err := queryBinaryLogs(clientCnf)
+	if err != nil {
+		return err
+	}
+
+	requested := os.Getenv("MYRMAN_BINLOG_START")
+	if requested == "" {
+		requested = s.Cfg.MySQL.BinlogStart
+	}
+	lastCataloged := ""
+	if latest, err := s.Repo.Latest(ctx); err != nil {
+		return fmt.Errorf("catalog latest binlog: %w", err)
+	} else if latest != nil {
+		lastCataloged = latest.Filename
+	}
+	startLog, err := ChooseStartLog(requested, lastCataloged, serverLogs)
+	if err != nil {
+		return err
+	}
+	log.Printf("binlog stream start file=%s (server has %d files, last cataloged=%q)", startLog, len(serverLogs), lastCataloged)
+
 	args := []string{
 		"--defaults-file=" + clientCnf,
 		"--read-from-remote-server",
 		"--raw",
 		"--stop-never",
+		"--to-last-log",
 		"--host=" + s.Cfg.MySQL.Host,
 		fmt.Sprintf("--port=%d", s.Cfg.MySQL.Port),
 		"--user=" + s.Cfg.MySQL.User,
 		"--result-file=" + ensureTrailingSlash(s.Cfg.Local.BinlogDir),
+		startLog,
 	}
-	// Start from first binlog if none specified — mysqlbinlog requires a log name.
-	// Override via MYRMAN_BINLOG_START.
-	startLog := os.Getenv("MYRMAN_BINLOG_START")
-	if startLog == "" {
-		startLog = "mysql-bin.000001"
-	}
-	args = append(args, startLog)
 
 	cmd := exec.Command("mysqlbinlog", args...)
 	cmd.Stdout = os.Stdout

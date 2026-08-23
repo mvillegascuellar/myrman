@@ -252,6 +252,15 @@ func (r *BinlogRepo) GetByFilename(ctx context.Context, name string) (*BinlogArc
 	return scanBinlog(row)
 }
 
+func (r *BinlogRepo) Latest(ctx context.Context) (*BinlogArchive, error) {
+	row := r.db.SQL.QueryRowContext(ctx, binlogSelect+` WHERE status!='DELETED' ORDER BY sequence_number DESC LIMIT 1`)
+	a, err := scanBinlog(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
+}
+
 func (r *BinlogRepo) List(ctx context.Context, limit int) ([]BinlogArchive, error) {
 	q := binlogSelect + ` WHERE status!='DELETED' ORDER BY sequence_number ASC`
 	args := []any{}

@@ -34,6 +34,7 @@ type MySQLConfig struct {
 	User               string `mapstructure:"user"`
 	DefaultsExtraFile  string `mapstructure:"defaults_extra_file"`
 	Password           string `mapstructure:"-"` // from MYRMAN_MYSQL_PASSWORD
+	BinlogStart        string `mapstructure:"binlog_start"` // empty = auto from SHOW BINARY LOGS
 }
 
 type EncryptionConfig struct {

@@ -103,7 +103,7 @@ Catalog path resolution: `--catalog`, else `MYRMAN_CATALOG`, else `/var/lib/myrm
 
 1. Start MySQL/Percona/MariaDB with binlogs + GTID.
 2. `myrman backup full` then make changes; `myrman backup incremental`.
-3. `myrman binlog start` (set `MYRMAN_BINLOG_START` if needed).
+3. `myrman binlog start` (starts at the oldest file from `SHOW BINARY LOGS`, or `mysql.binlog_start` / `MYRMAN_BINLOG_START`).
 4. `myrman catalog list` / `retain run --dry-run`.
 5. `myrman recover --target-time="..." ` review `recover.sh`, then `--apply` in a lab.
 

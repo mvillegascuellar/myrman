@@ -17,6 +17,7 @@ mysql:
   user: backup
   # Prefer MYRMAN_MYSQL_PASSWORD env or defaults_extra_file
   defaults_extra_file: ""
+  binlog_start: "" # empty = first available from SHOW BINARY LOGS
 
 compression: zstd # none|gzip|zstd
 
