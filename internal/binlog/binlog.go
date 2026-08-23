@@ -23,6 +23,7 @@ import (
 )
 
 const pidFileName = "binlog.pid"
+const daemonEnv = "MYRMAN_BINLOG_DAEMON"
 
 type Service struct {
 	Cfg   *config.Config
@@ -39,7 +40,7 @@ func (s *Service) pidPath() string {
 	return filepath.Join(s.Cfg.Local.Root, "run", pidFileName)
 }
 
-func (s *Service) Start(ctx context.Context) error {
+func (s *Service) Start(ctx context.Context, foreground bool) error {
 	if err := s.Cfg.EnsureDirs(); err != nil {
 		return err
 	}
@@ -52,6 +53,9 @@ func (s *Service) Start(ctx context.Context) error {
 
 	if err := config.RequireMySQLPassword(s.Cfg); err != nil {
 		return err
+	}
+	if os.Getenv(daemonEnv) != "1" && !foreground {
+		return s.spawnDaemon()
 	}
 	clientCnf, cleanupCnf, err := config.WriteClientDefaultsFile(s.Cfg)
 	if err != nil {
@@ -89,9 +93,10 @@ func (s *Service) Start(ctx context.Context) error {
 	candidates := logsFrom(serverLogs, startLog)
 	log.Printf("binlog stream start file=%s candidates=%d (last cataloged=%q backup binlog=%q)", startLog, len(candidates), lastCataloged, backupBinlog)
 
+	minSeq, _ := parser.SequenceFromFilename(startLog)
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go s.watchAndCatalog(watchCtx)
+	go s.watchAndCatalog(watchCtx, minSeq)
 
 	var lastErr error
 	for i, file := range candidates {
@@ -106,6 +111,35 @@ func (s *Service) Start(ctx context.Context) error {
 		return lastErr
 	}
 	return lastErr
+}
+
+func (s *Service) spawnDaemon() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	logPath := filepath.Join(s.Cfg.Local.Root, "run", "binlog.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Env = append(os.Environ(), daemonEnv+"=1")
+	cmd.Stdin = nil
+	cmd.Stdout = f
+	cmd.Stderr = f
+	cmd.Dir = s.Cfg.Local.Root
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	log.Printf("binlog streamer daemon started pid=%d log=%s (use 'myrman binlog stop' to stop)", cmd.Process.Pid, logPath)
+	return nil
 }
 
 func latestPhysicalBinlog(ctx context.Context, db *catalog.DB) string {
@@ -149,6 +183,7 @@ func (s *Service) runDump(ctx context.Context, cancel context.CancelFunc, client
 	args = append(args, startLog)
 
 	cmd := exec.Command("mysqlbinlog", args...)
+	cmd.Dir = s.Cfg.Local.BinlogDir
 	cmd.Stdout = os.Stdout
 	var errBuf bytes.Buffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
@@ -224,7 +259,7 @@ func (s *Service) isRunning() (bool, int) {
 	return true, pid
 }
 
-func (s *Service) watchAndCatalog(ctx context.Context) {
+func (s *Service) watchAndCatalog(ctx context.Context, minSeq int64) {
 	seen := map[string]int64{}
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -242,6 +277,9 @@ func (s *Service) watchAndCatalog(ctx context.Context) {
 					continue
 				}
 				name := e.Name()
+				if !shouldCatalogBinlog(name, minSeq) {
+					continue
+				}
 				path := filepath.Join(s.Cfg.Local.BinlogDir, name)
 				st, err := os.Stat(path)
 				if err != nil {

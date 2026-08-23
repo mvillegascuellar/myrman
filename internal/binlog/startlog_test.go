@@ -57,6 +57,18 @@ func TestLogsFrom(t *testing.T) {
 	}
 }
 
+func TestShouldCatalogBinlog(t *testing.T) {
+	if shouldCatalogBinlog("binlog.000001", 10) {
+		t.Fatal("should skip leftover files before dump start")
+	}
+	if !shouldCatalogBinlog("binlog.000010", 10) {
+		t.Fatal("should catalog dump start file")
+	}
+	if shouldCatalogBinlog("notes.txt", 1) {
+		t.Fatal("should skip non-binlog names")
+	}
+}
+
 func TestIsAnonymousGTIDDumpError(t *testing.T) {
 	msg := "Cannot replicate anonymous transaction when @@GLOBAL.GTID_MODE = ON, at file ./binlog.000001, position 157."
 	if !isAnonymousGTIDDumpError(msg) {

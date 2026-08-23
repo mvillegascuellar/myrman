@@ -323,19 +323,22 @@ func backupCmd() *cobra.Command {
 
 func binlogCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "binlog", Short: "Continuous binlog streaming"}
-	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "start",
-			Short: "Start mysqlbinlog --stop-never archiver",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				cfg, db, store, err := loadRuntime()
-				if err != nil {
-					return err
-				}
-				defer db.Close()
-				return binlog.NewService(cfg, db, store).Start(context.Background())
-			},
+	start := &cobra.Command{
+		Use:   "start",
+		Short: "Start mysqlbinlog --stop-never archiver (background by default)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, db, store, err := loadRuntime()
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			fg, _ := cmd.Flags().GetBool("foreground")
+			return binlog.NewService(cfg, db, store).Start(context.Background(), fg)
 		},
+	}
+	start.Flags().Bool("foreground", false, "keep the streamer in this terminal (do not daemonize)")
+	cmd.AddCommand(
+		start,
 		&cobra.Command{
 			Use:   "stop",
 			Short: "Stop binlog archiver",

@@ -83,6 +83,16 @@ func isAnonymousGTIDDumpError(stderr string) bool {
 	return strings.Contains(s, "anonymous transaction") && strings.Contains(s, "gtid_mode")
 }
 
+// shouldCatalogBinlog ignores leftover files older than the dump start
+// and non-binlog names in the archive directory.
+func shouldCatalogBinlog(name string, minSeq int64) bool {
+	seq, err := parser.SequenceFromFilename(name)
+	if err != nil {
+		return false
+	}
+	return seq >= minSeq
+}
+
 func parseShowBinaryLogs(out string) []string {
 	var names []string
 	for _, line := range strings.Split(out, "\n") {
