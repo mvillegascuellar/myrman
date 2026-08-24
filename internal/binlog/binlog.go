@@ -330,7 +330,13 @@ func (s *Service) scanBinlogDir(ctx context.Context, minSeq int64) {
 
 func (s *Service) syncBinlogFile(ctx context.Context, path, name string, size int64, live bool) error {
 	seq, _ := parser.SequenceFromFilename(name)
-	bounds, err := parser.ParseBinlogBounds(path)
+	var bounds *parser.BinlogBounds
+	var err error
+	if live {
+		bounds, err = parser.ParseBinlogHeader(path)
+	} else {
+		bounds, err = parser.ParseBinlogBounds(path)
+	}
 	if err != nil {
 		bounds = &parser.BinlogBounds{Filename: name, Sequence: seq}
 	}
@@ -366,7 +372,7 @@ func (s *Service) syncBinlogFile(ctx context.Context, path, name string, size in
 	}
 
 	wasComplete := rec.Status == string(catalog.StatusCompleted)
-	if live && rec.Status == string(catalog.StatusStreaming) && rec.FileSize.Valid && rec.FileSize.Int64 == size {
+	if live && rec.Status == string(catalog.StatusStreaming) && rec.FileSize.Valid && rec.FileSize.Int64 == size && rec.StartGTID.Valid && rec.StartGTID.String != "" {
 		return nil
 	}
 	if wasComplete && !live && rec.FileSize.Valid && rec.FileSize.Int64 == size {

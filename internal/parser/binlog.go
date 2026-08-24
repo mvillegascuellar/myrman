@@ -21,14 +21,31 @@ type BinlogBounds struct {
 }
 
 var (
-	tsRe   = regexp.MustCompile(`#(\d{6})\s+(\d{1,2}:\d{2}:\d{2})`)
-	gtidRe = regexp.MustCompile(`(?i)GTID[_\s]?[^=]*=\s*([0-9a-fA-F-]{36}:\d+(?:-\d+)?)`)
-	seqRe  = regexp.MustCompile(`\.(\d+)$`)
+	tsRe          = regexp.MustCompile(`#(\d{6})\s+(\d{1,2}:\d{2}:\d{2})`)
+	gtidRe        = regexp.MustCompile(`(?i)GTID[_\s]?[^=]*=\s*([0-9a-fA-F-]{36}:\d+(?:-\d+)?)`)
+	gtidNextRe    = regexp.MustCompile(`(?i)GTID_NEXT\s*=\s*'([0-9a-fA-F-]{36}:\d+)'`)
+	gtidSetRe     = regexp.MustCompile(`(?i)([0-9a-fA-F-]{36}:\d+(?:-\d+)?)`)
+	seqRe         = regexp.MustCompile(`\.(\d+)$`)
+	prevGTIDsMark = regexp.MustCompile(`(?i)Previous-GTIDs`)
 )
 
 // ParseBinlogBounds runs mysqlbinlog on path and extracts first/last timestamps and GTIDs.
 func ParseBinlogBounds(path string) (*BinlogBounds, error) {
-	cmd := exec.Command("mysqlbinlog", "--base64-output=DECODE-ROWS", "-v", path)
+	return parseBinlogFile(path, 0)
+}
+
+// ParseBinlogHeader only reads the start of the file (Previous-GTIDs / first GTID).
+func ParseBinlogHeader(path string) (*BinlogBounds, error) {
+	return parseBinlogFile(path, 65536)
+}
+
+func parseBinlogFile(path string, stopPos int) (*BinlogBounds, error) {
+	args := []string{"--base64-output=DECODE-ROWS", "-v"}
+	if stopPos > 0 {
+		args = append(args, fmt.Sprintf("--stop-position=%d", stopPos))
+	}
+	args = append(args, path)
+	cmd := exec.Command("mysqlbinlog", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -52,26 +69,38 @@ func parseBinlogOutput(path, text string) (*BinlogBounds, error) {
 
 	var times []time.Time
 	var gtids []string
+	var prevGTIDs string
+	inPrevGTIDs := false
 	sc := bufio.NewScanner(strings.NewReader(text))
 	// allow long lines
 	buf := make([]byte, 0, 1024*1024)
 	sc.Buffer(buf, 10*1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
+		if prevGTIDsMark.MatchString(line) {
+			inPrevGTIDs = true
+			continue
+		}
+		if inPrevGTIDs {
+			trimmed := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+			inPrevGTIDs = false
+			if trimmed != "" && !strings.EqualFold(trimmed, "[empty]") {
+				if gtidSetRe.MatchString(trimmed) {
+					prevGTIDs = trimmed
+				}
+			}
+		}
 		if m := tsRe.FindStringSubmatch(line); len(m) == 3 {
 			if t, err := parseBinlogTS(m[1], m[2]); err == nil {
 				times = append(times, t)
 			}
 		}
+		if m := gtidNextRe.FindStringSubmatch(line); len(m) == 2 {
+			gtids = append(gtids, m[1])
+			continue
+		}
 		if m := gtidRe.FindStringSubmatch(line); len(m) == 2 {
 			gtids = append(gtids, m[1])
-		}
-		// SET @@SESSION.GTID_NEXT= 'uuid:n'
-		if strings.Contains(line, "GTID_NEXT") {
-			re := regexp.MustCompile(`'([0-9a-fA-F-]{36}:\d+)'`)
-			if m := re.FindStringSubmatch(line); len(m) == 2 {
-				gtids = append(gtids, m[1])
-			}
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -81,9 +110,16 @@ func parseBinlogOutput(path, text string) (*BinlogBounds, error) {
 		b.StartTime = times[0]
 		b.EndTime = times[len(times)-1]
 	}
-	if len(gtids) > 0 {
+	if prevGTIDs != "" {
+		b.StartGTID = prevGTIDs
+	} else if len(gtids) > 0 {
 		b.StartGTID = gtids[0]
+	}
+	if len(gtids) > 0 {
 		b.EndGTID = gtids[len(gtids)-1]
+		if b.StartGTID == "" {
+			b.StartGTID = gtids[0]
+		}
 	}
 	return b, nil
 }

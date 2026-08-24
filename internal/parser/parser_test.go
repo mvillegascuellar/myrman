@@ -119,6 +119,41 @@ func TestSequenceFromFilename(t *testing.T) {
 	}
 }
 
+func TestParseBinlogOutputPreviousGTIDs(t *testing.T) {
+	sample := `#260819 23:39:25 server id 1  end_log_pos 126 CRC32 0xf6936257 	Start: binlog v 4, server v 8.0.46-37 created 260819 23:39:25
+# at 126
+#260819 23:39:25 server id 1  end_log_pos 197 CRC32 0x39b97859 	Previous-GTIDs
+# 1a34264e-9ac0-11f1-9e76-5254005f988f:1-43691
+# at 197
+SET @@SESSION.GTID_NEXT= '1a34264e-9ac0-11f1-9e76-5254005f988f:43692'/*!*/;
+`
+	b, err := parser.ParseBinlogBoundsForTest("binlog.000010", sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.StartGTID != "1a34264e-9ac0-11f1-9e76-5254005f988f:1-43691" {
+		t.Fatalf("start gtid=%s", b.StartGTID)
+	}
+	if b.EndGTID != "1a34264e-9ac0-11f1-9e76-5254005f988f:43692" {
+		t.Fatalf("end gtid=%s", b.EndGTID)
+	}
+}
+
+func TestParseBinlogOutputEmptyPreviousGTIDs(t *testing.T) {
+	sample := `#260819 23:18:02 server id 1  end_log_pos 126
+#260819 23:18:02 server id 1  end_log_pos 157 	Previous-GTIDs
+# [empty]
+SET @@SESSION.GTID_NEXT= '1a34264e-9ac0-11f1-9e76-5254005f988f:1'/*!*/;
+`
+	b, err := parser.ParseBinlogBoundsForTest("binlog.000006", sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.StartGTID != "1a34264e-9ac0-11f1-9e76-5254005f988f:1" {
+		t.Fatalf("start gtid=%s", b.StartGTID)
+	}
+}
+
 func TestParseBinlogOutput(t *testing.T) {
 	sample := `#240115 10:00:01 server id 1  end_log_pos 123 CRC32 ...
 # GTID_NEXT= 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1'
