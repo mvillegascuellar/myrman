@@ -40,7 +40,7 @@ func (s *Service) pidPath() string {
 	return filepath.Join(s.Cfg.Local.Root, "run", pidFileName)
 }
 
-func (s *Service) Start(ctx context.Context, foreground bool) error {
+func (s *Service) Start(ctx context.Context, foreground bool, startFile string) error {
 	if err := s.Cfg.EnsureDirs(); err != nil {
 		return err
 	}
@@ -71,7 +71,10 @@ func (s *Service) Start(ctx context.Context, foreground bool) error {
 		return err
 	}
 
-	requested := os.Getenv("MYRMAN_BINLOG_START")
+	requested := strings.TrimSpace(startFile)
+	if requested == "" {
+		requested = os.Getenv("MYRMAN_BINLOG_START")
+	}
 	if requested == "" {
 		requested = s.Cfg.MySQL.BinlogStart
 	}

@@ -334,10 +334,12 @@ func binlogCmd() *cobra.Command {
 			}
 			defer db.Close()
 			fg, _ := cmd.Flags().GetBool("foreground")
-			return binlog.NewService(cfg, db, store).Start(context.Background(), fg)
+			startFile, _ := cmd.Flags().GetString("start-file")
+			return binlog.NewService(cfg, db, store).Start(context.Background(), fg, startFile)
 		},
 	}
 	start.Flags().Bool("foreground", false, "keep the streamer in this terminal (do not daemonize)")
+	start.Flags().String("start-file", "", "first remote binlog to dump (default: catalog, then last backup, then oldest on server)")
 	cmd.AddCommand(
 		start,
 		&cobra.Command{
