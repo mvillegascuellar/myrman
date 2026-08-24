@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -306,15 +307,18 @@ func (s *Service) scanBinlogDir(ctx context.Context, minSeq int64) {
 	if err != nil {
 		return
 	}
-	var names []string
+	type item struct {
+		name string
+		path string
+		seq  int64
+		size int64
+	}
+	var files []item
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		names = append(names, e.Name())
-	}
-	maxSeq := highestBinlogSeq(names, minSeq)
-	for _, name := range names {
+		name := e.Name()
 		if !shouldCatalogBinlog(name, minSeq) {
 			continue
 		}
@@ -324,23 +328,44 @@ func (s *Service) scanBinlogDir(ctx context.Context, minSeq int64) {
 		if err != nil || st.Size() == 0 {
 			continue
 		}
-		live := seq == maxSeq
-		if err := s.syncBinlogFile(ctx, path, name, st.Size(), live); err != nil {
-			log.Printf("catalog binlog %s: %v", name, err)
+		files = append(files, item{name: name, path: path, seq: seq, size: st.Size()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].seq < files[j].seq })
+	headers := make([]*parser.BinlogBounds, len(files))
+	for i, f := range files {
+		h, err := parser.ParseBinlogHeader(f.path)
+		if err != nil {
+			h = &parser.BinlogBounds{Filename: f.name, Sequence: f.seq}
+		}
+		headers[i] = h
+	}
+	for i, f := range files {
+		live := i == len(files)-1
+		bounds := *headers[i]
+		if !live && i+1 < len(files) && headers[i+1].PreviousGTIDs != "" {
+			// Next file's Previous-GTIDs is the executed set after this file closed.
+			bounds.EndGTID = headers[i+1].PreviousGTIDs
+		} else if !live {
+			full, err := parser.ParseBinlogBounds(f.path)
+			if err == nil {
+				bounds.EndGTID = full.EndGTID
+				if !full.EndTime.IsZero() {
+					bounds.EndTime = full.EndTime
+				}
+			}
+		} else {
+			bounds.EndGTID = ""
+			bounds.EndTime = time.Time{}
+		}
+		if err := s.syncBinlogFile(ctx, f.path, f.name, f.size, live, &bounds); err != nil {
+			log.Printf("catalog binlog %s: %v", f.name, err)
 		}
 	}
 }
 
-func (s *Service) syncBinlogFile(ctx context.Context, path, name string, size int64, live bool) error {
+func (s *Service) syncBinlogFile(ctx context.Context, path, name string, size int64, live bool, bounds *parser.BinlogBounds) error {
 	seq, _ := parser.SequenceFromFilename(name)
-	var bounds *parser.BinlogBounds
-	var err error
-	if live {
-		bounds, err = parser.ParseBinlogHeader(path)
-	} else {
-		bounds, err = parser.ParseBinlogBounds(path)
-	}
-	if err != nil {
+	if bounds == nil {
 		bounds = &parser.BinlogBounds{Filename: name, Sequence: seq}
 	}
 	status := string(catalog.StatusStreaming)
@@ -378,8 +403,15 @@ func (s *Service) syncBinlogFile(ctx context.Context, path, name string, size in
 	if live && rec.Status == string(catalog.StatusStreaming) && rec.FileSize.Valid && rec.FileSize.Int64 == size && rec.StartGTID.Valid && rec.StartGTID.String != "" {
 		return nil
 	}
-	if wasComplete && !live && rec.FileSize.Valid && rec.FileSize.Int64 == size {
-		return nil
+	if wasComplete && !live && rec.FileSize.Valid && rec.FileSize.Int64 == size && rec.EndGTID.Valid && rec.EndGTID.String != "" {
+		// Still refresh GTIDs if start was copied from Previous-GTIDs incorrectly onto a file
+		// that should have an empty start (handled by apply below when EndGTID already set
+		// but StartGTID should be empty). Always apply bounds.
+		sameStart := rec.StartGTID.String == bounds.StartGTID || (!rec.StartGTID.Valid && bounds.StartGTID == "")
+		sameEnd := rec.EndGTID.String == bounds.EndGTID
+		if sameStart && sameEnd {
+			return nil
+		}
 	}
 	applyBinlogBounds(rec, bounds, live)
 	rec.FileSize = catalog.NullInt64(size, true)
@@ -405,9 +437,7 @@ func applyBinlogBounds(rec *catalog.BinlogArchive, bounds *parser.BinlogBounds, 
 	if !bounds.StartTime.IsZero() {
 		rec.StartTime = catalog.NullInt64(bounds.StartTime.Unix(), true)
 	}
-	if bounds.StartGTID != "" {
-		rec.StartGTID = catalog.NullString(bounds.StartGTID)
-	}
+	rec.StartGTID = catalog.NullString(bounds.StartGTID)
 	if live {
 		rec.EndTime = catalog.NullInt64(0, false)
 		rec.EndGTID = catalog.NullString("")
@@ -416,9 +446,7 @@ func applyBinlogBounds(rec *catalog.BinlogArchive, bounds *parser.BinlogBounds, 
 	if !bounds.EndTime.IsZero() {
 		rec.EndTime = catalog.NullInt64(bounds.EndTime.Unix(), true)
 	}
-	if bounds.EndGTID != "" {
-		rec.EndGTID = catalog.NullString(bounds.EndGTID)
-	}
+	rec.EndGTID = catalog.NullString(bounds.EndGTID)
 }
 
 func (s *Service) uploadBinlog(ctx context.Context, rec *catalog.BinlogArchive, path, name string) {

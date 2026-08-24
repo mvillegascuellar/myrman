@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,17 +13,17 @@ import (
 
 // BinlogBounds extracted from a raw binlog file via mysqlbinlog.
 type BinlogBounds struct {
-	StartTime time.Time
-	EndTime   time.Time
-	StartGTID string
-	EndGTID   string
-	Filename  string
-	Sequence  int64
+	StartTime     time.Time
+	EndTime       time.Time
+	PreviousGTIDs string // GTID set executed before this file (Previous-GTIDs event)
+	StartGTID     string // same as PreviousGTIDs; empty when Previous-GTIDs is [empty]
+	EndGTID       string // GTID set contained in this file (merged GTID_NEXT values)
+	Filename      string
+	Sequence      int64
 }
 
 var (
 	tsRe          = regexp.MustCompile(`#(\d{6})\s+(\d{1,2}:\d{2}:\d{2})`)
-	gtidRe        = regexp.MustCompile(`(?i)GTID[_\s]?[^=]*=\s*([0-9a-fA-F-]{36}:\d+(?:-\d+)?)`)
 	gtidNextRe    = regexp.MustCompile(`(?i)GTID_NEXT\s*=\s*'([0-9a-fA-F-]{36}:\d+)'`)
 	gtidSetRe     = regexp.MustCompile(`(?i)([0-9a-fA-F-]{36}:\d+(?:-\d+)?)`)
 	seqRe         = regexp.MustCompile(`\.(\d+)$`)
@@ -96,11 +97,9 @@ func parseBinlogOutput(path, text string) (*BinlogBounds, error) {
 			}
 		}
 		if m := gtidNextRe.FindStringSubmatch(line); len(m) == 2 {
-			gtids = append(gtids, m[1])
-			continue
-		}
-		if m := gtidRe.FindStringSubmatch(line); len(m) == 2 {
-			gtids = append(gtids, m[1])
+			if !strings.EqualFold(m[1], "AUTOMATIC") {
+				gtids = append(gtids, m[1])
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -110,18 +109,89 @@ func parseBinlogOutput(path, text string) (*BinlogBounds, error) {
 		b.StartTime = times[0]
 		b.EndTime = times[len(times)-1]
 	}
-	if prevGTIDs != "" {
-		b.StartGTID = prevGTIDs
-	} else if len(gtids) > 0 {
-		b.StartGTID = gtids[0]
-	}
-	if len(gtids) > 0 {
-		b.EndGTID = gtids[len(gtids)-1]
-		if b.StartGTID == "" {
-			b.StartGTID = gtids[0]
-		}
-	}
+	b.PreviousGTIDs = prevGTIDs
+	b.StartGTID = prevGTIDs
+	b.EndGTID = CompactGTIDSet(gtids)
 	return b, nil
+}
+
+// CompactGTIDSet merges uuid:n values into MySQL GTID-set form (uuid:1-61).
+func CompactGTIDSet(ids []string) string {
+	type pair struct {
+		uuid string
+		n    int64
+	}
+	var items []pair
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || strings.EqualFold(id, "AUTOMATIC") {
+			continue
+		}
+		uuid, n, ok := splitSingleGTID(id)
+		if !ok {
+			continue
+		}
+		key := uuid + ":" + strconv.FormatInt(n, 10)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, pair{uuid, n})
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	byUUID := map[string][]int64{}
+	var uuids []string
+	for _, it := range items {
+		if _, ok := byUUID[it.uuid]; !ok {
+			uuids = append(uuids, it.uuid)
+		}
+		byUUID[it.uuid] = append(byUUID[it.uuid], it.n)
+	}
+	var parts []string
+	for _, uuid := range uuids {
+		ns := byUUID[uuid]
+		sort.Slice(ns, func(i, j int) bool { return ns[i] < ns[j] })
+		var ranges []string
+		lo, hi := ns[0], ns[0]
+		for _, n := range ns[1:] {
+			if n == hi || n == hi+1 {
+				if n > hi {
+					hi = n
+				}
+				continue
+			}
+			ranges = append(ranges, formatGTIDRange(lo, hi))
+			lo, hi = n, n
+		}
+		ranges = append(ranges, formatGTIDRange(lo, hi))
+		parts = append(parts, uuid+":"+strings.Join(ranges, ":"))
+	}
+	return strings.Join(parts, ",")
+}
+
+func splitSingleGTID(id string) (uuid string, n int64, ok bool) {
+	i := strings.LastIndex(id, ":")
+	if i <= 0 || i == len(id)-1 {
+		return "", 0, false
+	}
+	if strings.Contains(id[i+1:], "-") {
+		return "", 0, false
+	}
+	n, err := strconv.ParseInt(id[i+1:], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return id[:i], n, true
+}
+
+func formatGTIDRange(lo, hi int64) string {
+	if lo == hi {
+		return strconv.FormatInt(lo, 10)
+	}
+	return strconv.FormatInt(lo, 10) + "-" + strconv.FormatInt(hi, 10)
 }
 
 func parseBinlogTS(ymd, hms string) (time.Time, error) {

@@ -144,13 +144,17 @@ func TestParseBinlogOutputEmptyPreviousGTIDs(t *testing.T) {
 #260819 23:18:02 server id 1  end_log_pos 157 	Previous-GTIDs
 # [empty]
 SET @@SESSION.GTID_NEXT= '1a34264e-9ac0-11f1-9e76-5254005f988f:1'/*!*/;
+SET @@SESSION.GTID_NEXT= '1a34264e-9ac0-11f1-9e76-5254005f988f:61'/*!*/;
 `
 	b, err := parser.ParseBinlogBoundsForTest("binlog.000006", sample)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.StartGTID != "1a34264e-9ac0-11f1-9e76-5254005f988f:1" {
-		t.Fatalf("start gtid=%s", b.StartGTID)
+	if b.StartGTID != "" {
+		t.Fatalf("start gtid=%s want empty Previous-GTIDs", b.StartGTID)
+	}
+	if b.EndGTID != "1a34264e-9ac0-11f1-9e76-5254005f988f:1:61" {
+		t.Fatalf("end gtid=%s", b.EndGTID)
 	}
 }
 
@@ -169,10 +173,26 @@ SET @@SESSION.GTID_NEXT= 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:99'
 	if b.Sequence != 10 {
 		t.Fatalf("seq=%d", b.Sequence)
 	}
-	if b.StartGTID == "" || b.EndGTID == "" {
-		t.Fatalf("gtids start=%s end=%s", b.StartGTID, b.EndGTID)
+	if b.StartGTID != "" {
+		t.Fatalf("start gtid=%s want empty (no Previous-GTIDs)", b.StartGTID)
+	}
+	if b.EndGTID != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1:99" {
+		t.Fatalf("end gtid=%s", b.EndGTID)
 	}
 	if b.StartTime.IsZero() || b.EndTime.IsZero() {
 		t.Fatal("times missing")
+	}
+}
+
+func TestCompactGTIDSet(t *testing.T) {
+	got := parser.CompactGTIDSet([]string{
+		"1a34264e-9ac0-11f1-9e76-5254005f988f:1",
+		"1a34264e-9ac0-11f1-9e76-5254005f988f:61",
+		"1a34264e-9ac0-11f1-9e76-5254005f988f:2",
+		"AUTOMATIC",
+	})
+	want := "1a34264e-9ac0-11f1-9e76-5254005f988f:1-2:61"
+	if got != want {
+		t.Fatalf("got %s want %s", got, want)
 	}
 }
