@@ -57,6 +57,17 @@ func TestLogsFrom(t *testing.T) {
 	}
 }
 
+func TestLeftoverAndHighestSeq(t *testing.T) {
+	names := []string{"binlog.000001", "binlog.000010", "notes.txt"}
+	got := leftoverBinlogNames(names, 10)
+	if len(got) != 1 || got[0] != "binlog.000001" {
+		t.Fatalf("%v", got)
+	}
+	if highestBinlogSeq(names, 10) != 10 {
+		t.Fatalf("highest %d", highestBinlogSeq(names, 10))
+	}
+}
+
 func TestShouldCatalogBinlog(t *testing.T) {
 	if shouldCatalogBinlog("binlog.000001", 10) {
 		t.Fatal("should skip leftover files before dump start")

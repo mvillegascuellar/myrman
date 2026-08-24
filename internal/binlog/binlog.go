@@ -260,100 +260,171 @@ func (s *Service) isRunning() (bool, int) {
 }
 
 func (s *Service) watchAndCatalog(ctx context.Context, minSeq int64) {
-	seen := map[string]int64{}
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	s.pruneLeftoverBinlogs(ctx, minSeq)
+	s.scanBinlogDir(ctx, minSeq)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			entries, err := os.ReadDir(s.Cfg.Local.BinlogDir)
-			if err != nil {
-				continue
-			}
-			for _, e := range entries {
-				if e.IsDir() {
-					continue
-				}
-				name := e.Name()
-				if !shouldCatalogBinlog(name, minSeq) {
-					continue
-				}
-				path := filepath.Join(s.Cfg.Local.BinlogDir, name)
-				st, err := os.Stat(path)
-				if err != nil {
-					continue
-				}
-				prev, ok := seen[name]
-				if !ok {
-					seen[name] = st.Size()
-					continue
-				}
-				// Stable size => closed enough to catalog
-				if prev == st.Size() && st.Size() > 0 {
-					if _, err := s.Repo.GetByFilename(ctx, name); err == nil {
-						continue // already cataloged
-					}
-					if err := s.catalogFile(ctx, path, name, st.Size()); err != nil {
-						log.Printf("catalog binlog %s: %v", name, err)
-						continue
-					}
-					seen[name] = st.Size()
-				} else {
-					seen[name] = st.Size()
-				}
-			}
+			s.scanBinlogDir(ctx, minSeq)
 		}
 	}
 }
 
-func (s *Service) catalogFile(ctx context.Context, path, name string, size int64) error {
+func (s *Service) pruneLeftoverBinlogs(ctx context.Context, minSeq int64) {
+	entries, err := os.ReadDir(s.Cfg.Local.BinlogDir)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	for _, name := range leftoverBinlogNames(names, minSeq) {
+		path := filepath.Join(s.Cfg.Local.BinlogDir, name)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("remove leftover binlog %s: %v", name, err)
+			continue
+		}
+		log.Printf("removed leftover binlog %s (older than dump start seq=%d)", name, minSeq)
+		if rec, err := s.Repo.GetByFilename(ctx, name); err == nil && rec != nil {
+			_ = s.Repo.MarkDeleted(ctx, rec.ID)
+		}
+	}
+}
+
+func (s *Service) scanBinlogDir(ctx context.Context, minSeq int64) {
+	entries, err := os.ReadDir(s.Cfg.Local.BinlogDir)
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	maxSeq := highestBinlogSeq(names, minSeq)
+	for _, name := range names {
+		if !shouldCatalogBinlog(name, minSeq) {
+			continue
+		}
+		seq, _ := parser.SequenceFromFilename(name)
+		path := filepath.Join(s.Cfg.Local.BinlogDir, name)
+		st, err := os.Stat(path)
+		if err != nil || st.Size() == 0 {
+			continue
+		}
+		live := seq == maxSeq
+		if err := s.syncBinlogFile(ctx, path, name, st.Size(), live); err != nil {
+			log.Printf("catalog binlog %s: %v", name, err)
+		}
+	}
+}
+
+func (s *Service) syncBinlogFile(ctx context.Context, path, name string, size int64, live bool) error {
+	seq, _ := parser.SequenceFromFilename(name)
 	bounds, err := parser.ParseBinlogBounds(path)
 	if err != nil {
-		// Still catalog with sequence only
-		seq, _ := parser.SequenceFromFilename(name)
 		bounds = &parser.BinlogBounds{Filename: name, Sequence: seq}
-		log.Printf("warning: parse bounds for %s: %v", name, err)
 	}
-	rec := &catalog.BinlogArchive{
-		ID:              uuid.NewString(),
-		Filename:        name,
-		SequenceNumber:  bounds.Sequence,
-		FileSize:        catalog.NullInt64(size, true),
-		StorageLocation: catalog.StorageLocal,
-		LocalPath:       catalog.NullString(path),
-		Status:          "COMPLETED",
-		CreatedAt:       catalog.NowUnix(),
+	status := string(catalog.StatusStreaming)
+	if !live {
+		status = string(catalog.StatusCompleted)
+	}
+
+	rec, err := s.Repo.GetByFilename(ctx, name)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		rec = &catalog.BinlogArchive{
+			ID:              uuid.NewString(),
+			Filename:        name,
+			SequenceNumber:  seq,
+			StorageLocation: catalog.StorageLocal,
+			LocalPath:       catalog.NullString(path),
+			Status:          status,
+			CreatedAt:       catalog.NowUnix(),
+		}
+		applyBinlogBounds(rec, bounds, live)
+		rec.FileSize = catalog.NullInt64(size, true)
+		if err := s.Repo.Insert(ctx, rec); err != nil {
+			return err
+		}
+		log.Printf("cataloged binlog %s seq=%d status=%s size=%d", name, seq, status, size)
+		if !live {
+			s.uploadBinlog(ctx, rec, path, name)
+		}
+		return nil
+	}
+
+	wasComplete := rec.Status == string(catalog.StatusCompleted)
+	if live && rec.Status == string(catalog.StatusStreaming) && rec.FileSize.Valid && rec.FileSize.Int64 == size {
+		return nil
+	}
+	if wasComplete && !live && rec.FileSize.Valid && rec.FileSize.Int64 == size {
+		return nil
+	}
+	applyBinlogBounds(rec, bounds, live)
+	rec.FileSize = catalog.NullInt64(size, true)
+	rec.LocalPath = catalog.NullString(path)
+	rec.Status = status
+	if err := s.Repo.Update(ctx, rec); err != nil {
+		return err
+	}
+	if !live && !wasComplete {
+		log.Printf("cataloged binlog %s seq=%d status=%s size=%d", name, seq, status, size)
+		s.uploadBinlog(ctx, rec, path, name)
+	}
+	return nil
+}
+
+func applyBinlogBounds(rec *catalog.BinlogArchive, bounds *parser.BinlogBounds, live bool) {
+	if bounds == nil {
+		return
+	}
+	if bounds.Sequence != 0 {
+		rec.SequenceNumber = bounds.Sequence
 	}
 	if !bounds.StartTime.IsZero() {
 		rec.StartTime = catalog.NullInt64(bounds.StartTime.Unix(), true)
 	}
-	if !bounds.EndTime.IsZero() {
-		rec.EndTime = catalog.NullInt64(bounds.EndTime.Unix(), true)
-	}
 	if bounds.StartGTID != "" {
 		rec.StartGTID = catalog.NullString(bounds.StartGTID)
+	}
+	if live {
+		rec.EndTime = catalog.NullInt64(0, false)
+		rec.EndGTID = catalog.NullString("")
+		return
+	}
+	if !bounds.EndTime.IsZero() {
+		rec.EndTime = catalog.NullInt64(bounds.EndTime.Unix(), true)
 	}
 	if bounds.EndGTID != "" {
 		rec.EndGTID = catalog.NullString(bounds.EndGTID)
 	}
-	if err := s.Repo.Insert(ctx, rec); err != nil {
-		return err
+}
+
+func (s *Service) uploadBinlog(ctx context.Context, rec *catalog.BinlogArchive, path, name string) {
+	if !s.Store.HasCloud() {
+		return
 	}
-	if s.Store.HasCloud() {
-		key := s.Store.ObjectKey(name, time.Now().UTC())
-		url, err := s.Store.UploadFile(ctx, path, key)
-		if err != nil {
-			log.Printf("binlog cloud upload %s: %v", name, err)
-		} else {
-			rec.CloudURL = catalog.NullString(url)
-			rec.StorageLocation = catalog.StorageBoth
-			_ = s.Repo.UpdateStorage(ctx, rec.ID, catalog.StorageBoth, nil, catalog.PtrString(url))
-		}
+	key := s.Store.ObjectKey(name, time.Now().UTC())
+	url, err := s.Store.UploadFile(ctx, path, key)
+	if err != nil {
+		log.Printf("binlog cloud upload %s: %v", name, err)
+		return
 	}
-	log.Printf("cataloged binlog %s seq=%d", name, rec.SequenceNumber)
-	return nil
+	rec.CloudURL = catalog.NullString(url)
+	rec.StorageLocation = catalog.StorageBoth
+	_ = s.Repo.UpdateStorage(ctx, rec.ID, catalog.StorageBoth, nil, catalog.PtrString(url))
 }
 
 func ensureTrailingSlash(p string) string {

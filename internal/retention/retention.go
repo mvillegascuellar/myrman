@@ -319,6 +319,10 @@ func (e *Engine) computeBinlogKeep(backs []catalog.PhysicalBackup, binlogs []cat
 		cutoff = localCutoff
 	}
 	for _, a := range binlogs {
+		if a.Status == string(catalog.StatusStreaming) {
+			keep[a.ID] = true
+			continue
+		}
 		t := a.EndTime.Int64
 		if !a.EndTime.Valid {
 			t = a.CreatedAt

@@ -93,6 +93,34 @@ func shouldCatalogBinlog(name string, minSeq int64) bool {
 	return seq >= minSeq
 }
 
+func leftoverBinlogNames(names []string, minSeq int64) []string {
+	var out []string
+	for _, name := range names {
+		seq, err := parser.SequenceFromFilename(name)
+		if err != nil {
+			continue
+		}
+		if seq < minSeq {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func highestBinlogSeq(names []string, minSeq int64) int64 {
+	var maxSeq int64
+	for _, name := range names {
+		if !shouldCatalogBinlog(name, minSeq) {
+			continue
+		}
+		seq, _ := parser.SequenceFromFilename(name)
+		if seq > maxSeq {
+			maxSeq = seq
+		}
+	}
+	return maxSeq
+}
+
 func parseShowBinaryLogs(out string) []string {
 	var names []string
 	for _, line := range strings.Split(out, "\n") {

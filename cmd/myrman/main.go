@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -410,7 +411,7 @@ func catalogCmd() *cobra.Command {
 
 	show := &cobra.Command{
 		Use:   "show [id]",
-		Short: "Show a physical backup by id (JSON)",
+		Short: "Show a physical or binlog catalog entry by id (JSON)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, db, _, err := loadRuntime()
@@ -418,13 +419,27 @@ func catalogCmd() *cobra.Command {
 				return err
 			}
 			defer db.Close()
-			b, err := catalog.NewPhysicalRepo(db).Get(context.Background(), args[0])
+			ctx := context.Background()
+			id := args[0]
+			b, err := catalog.NewPhysicalRepo(db).Get(ctx, id)
+			if err == nil {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(b)
+			}
+			if err != sql.ErrNoRows {
+				return err
+			}
+			a, err := catalog.NewBinlogRepo(db).Get(ctx, id)
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("catalog id %s not found", id)
+			}
 			if err != nil {
 				return err
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
-			return enc.Encode(b)
+			return enc.Encode(a)
 		},
 	}
 	cmd.AddCommand(list, show)

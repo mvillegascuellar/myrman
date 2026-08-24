@@ -48,6 +48,23 @@ func TestMigrateAndCRUD(t *testing.T) {
 		t.Fatalf("%d", got.LSNTo)
 	}
 
+	blog := catalog.NewBinlogRepo(db)
+	a := &catalog.BinlogArchive{
+		ID:              "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Filename:        "binlog.000010",
+		SequenceNumber:  10,
+		StorageLocation: catalog.StorageLocal,
+		Status:          string(catalog.StatusStreaming),
+		CreatedAt:       1700000400,
+	}
+	if err := blog.Insert(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	shown, err := blog.Get(t.Context(), a.ID)
+	if err != nil || shown.Filename != "binlog.000010" || shown.Status != string(catalog.StatusStreaming) {
+		t.Fatalf("binlog get=%+v err=%v", shown, err)
+	}
+
 	inc := &catalog.PhysicalBackup{
 		ID:              "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
 		ParentID:        catalog.NullString(b.ID),

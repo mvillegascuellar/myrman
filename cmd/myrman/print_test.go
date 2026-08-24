@@ -62,3 +62,28 @@ func TestPrintPhysicalTable(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+func TestPrintBinlogTableStreaming(t *testing.T) {
+	var buf bytes.Buffer
+	rows := []catalog.BinlogArchive{
+		{
+			ID:        "cfe3f335-a193-40ab-9b42-1baa0e696caa",
+			Filename:  "binlog.000010",
+			StartTime: sql.NullInt64{Int64: 1787180525, Valid: true},
+			Status:    string(catalog.StatusStreaming),
+		},
+	}
+	if err := printBinlogTable(&buf, rows); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "STREAMING") || !strings.Contains(out, "binlog.000010") {
+		t.Fatal(out)
+	}
+	if !strings.Contains(out, "-\tSTREAMING") && !strings.Contains(out, "-\t\tSTREAMING") {
+		// duration column should be "-" when EndTime is unset
+		if !strings.Contains(out, "-") {
+			t.Fatal(out)
+		}
+	}
+}

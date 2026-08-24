@@ -39,6 +39,7 @@ const (
 	StatusFailed    BackupStatus = "FAILED"
 	StatusPrepared  BackupStatus = "PREPARED"
 	StatusDeleted   BackupStatus = "DELETED"
+	StatusStreaming BackupStatus = "STREAMING"
 )
 
 type PhysicalBackup struct {
@@ -247,9 +248,31 @@ INSERT INTO binlog_archives (
 	return err
 }
 
-func (r *BinlogRepo) GetByFilename(ctx context.Context, name string) (*BinlogArchive, error) {
-	row := r.db.SQL.QueryRowContext(ctx, binlogSelect+` WHERE filename=?`, name)
+func (r *BinlogRepo) Get(ctx context.Context, id string) (*BinlogArchive, error) {
+	row := r.db.SQL.QueryRowContext(ctx, binlogSelect+` WHERE id=?`, id)
 	return scanBinlog(row)
+}
+
+func (r *BinlogRepo) GetByFilename(ctx context.Context, name string) (*BinlogArchive, error) {
+	row := r.db.SQL.QueryRowContext(ctx, binlogSelect+` WHERE filename=? AND status!='DELETED'`, name)
+	a, err := scanBinlog(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
+}
+
+func (r *BinlogRepo) Update(ctx context.Context, a *BinlogArchive) error {
+	_, err := r.db.SQL.ExecContext(ctx, `
+UPDATE binlog_archives SET
+  sequence_number=?, start_time=?, end_time=?, start_gtid=?, end_gtid=?,
+  file_size=?, storage_location=?, local_path=?, cloud_url=?, status=?
+WHERE id=?`,
+		a.SequenceNumber, nullInt(a.StartTime), nullInt(a.EndTime),
+		nullStr(a.StartGTID), nullStr(a.EndGTID), nullInt(a.FileSize),
+		a.StorageLocation, nullStr(a.LocalPath), nullStr(a.CloudURL), a.Status, a.ID,
+	)
+	return err
 }
 
 func (r *BinlogRepo) Latest(ctx context.Context) (*BinlogArchive, error) {
